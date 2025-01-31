@@ -1,4 +1,4 @@
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::fmt;
 
 #[derive(Clone, Debug)]
@@ -62,10 +62,25 @@ impl fmt::Display for MerkleNode {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+pub enum NodeDirection {
+    Left,
+    Right,
+}
+
+impl NodeDirection {
+    fn value(&self) -> u8 {
+        match self {
+            NodeDirection::Left => 0,
+            NodeDirection::Right => 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct TraversePath {
     pub hashes: Vec<String>,
-    pub directions: Vec<u8>, // 0 for left, 1 for right
+    pub directions: Vec<NodeDirection>,
 }
 
 impl TraversePath {
@@ -76,15 +91,17 @@ impl TraversePath {
         }
     }
 
-    fn add_step(&mut self, hash: String, direction: u8) {
+    fn add_step(&mut self, hash: String, direction: NodeDirection) {
         self.hashes.push(hash);
         self.directions.push(direction);
     }
 
     pub fn to_vec(&self) -> Vec<(String, u8)> {
-        self.hashes.iter().zip(self.directions.iter()).map(|(hash, direction)| {
-            (hash.to_string(), direction.clone())
-        }).collect()
+        self.hashes
+            .iter()
+            .zip(self.directions.iter())
+            .map(|(hash, direction)| (hash.to_string(), direction.value()))
+            .collect()
     }
 }
 
@@ -103,7 +120,10 @@ impl MerkleTree {
             .map(|&(user_id, user_balance)| {
                 let user_data = UserData::new(user_id, user_balance);
                 let serialized = format!("({},{})", user_id, user_balance);
-                MerkleNode::new_leaf(tagged_hash(tag_leaf, serialized.as_bytes()), Some(user_data))
+                MerkleNode::new_leaf(
+                    tagged_hash(tag_leaf, serialized.as_bytes()),
+                    Some(user_data),
+                )
             })
             .collect();
 
@@ -131,24 +151,22 @@ impl MerkleTree {
     }
 
     pub fn root(&self) -> Option<String> {
-        self.root.as_ref().map(|node|hex::encode( &node.hash))
+        self.root.as_ref().map(|node| hex::encode(&node.hash))
     }
 
     fn print(&self) {
         if let Some(root) = &self.root {
-            // Use a stack to simulate recursion
             let mut stack = Vec::new();
             stack.push((root, 0, "Root")); // (node, level, position)
 
             while let Some((node, level, position)) = stack.pop() {
-                // Print the current node
                 let indent = "  ".repeat(level);
                 println!("{}{}: {}", indent, position, node);
 
-                // Push the right child first (so the left child is processed first)
                 if let Some(right) = &node.right {
                     stack.push((right, level + 1, "Right"));
                 }
+
                 if let Some(left) = &node.left {
                     stack.push((left, level + 1, "Left"));
                 }
@@ -180,28 +198,31 @@ impl MerkleTree {
     {
         if let Some(user_data) = &node.user_data {
             if predicate(user_data) {
-                return Some((node, TraversePath {
-                    directions: path.directions.clone(),
-                    hashes: path.hashes.clone(),
-                }));
+                return Some((
+                    node,
+                    TraversePath {
+                        directions: path.directions.clone(),
+                        hashes: path.hashes.clone(),
+                    },
+                ));
             }
         }
 
         if let Some(left) = &node.left {
-            path.add_step(hex::encode(&node.hash), 0); // 0 for left
+            path.add_step(hex::encode(&node.hash), NodeDirection::Left); // 0 for left
             if let Some(result) = Self::search_node_with_path(left, predicate, path) {
                 return Some(result);
             }
-            path.hashes.pop(); // Backtrack
+            path.hashes.pop();
             path.directions.pop();
         }
 
         if let Some(right) = &node.right {
-            path.add_step(hex::encode(&node.hash), 1); // 1 for right
+            path.add_step(hex::encode(&node.hash), NodeDirection::Right); // 1 for right
             if let Some(result) = Self::search_node_with_path(right, predicate, path) {
                 return Some(result);
             }
-            path.hashes.pop(); // Backtrack
+            path.hashes.pop();
             path.directions.pop();
         }
 
@@ -217,9 +238,9 @@ fn tagged_hash(tag: &str, input: &[u8]) -> Vec<u8> {
     hasher.finalize().to_vec()
 }
 
-
 #[cfg(test)]
 mod tests {
+    use super::*;
     use rstest::rstest;
 
     #[rstest]
@@ -243,4 +264,48 @@ mod tests {
         assert_eq!(hex::encode(actual), expected);
     }
 
+    #[test]
+    fn it_can_build_a_tree() {
+        let user_data = vec![(1, 1111), (2, 2222), (3, 3333), (4, 4444), (5, 5555)];
+        let tag_leaf = "ProofOfReserve_Leaf";
+        let tag_branch = "ProofOfReserve_Branch";
+
+        let tree = MerkleTree::build(tag_leaf, tag_branch, &user_data);
+
+        assert_eq!(
+            tree.root().unwrap(),
+            "857f9bdfbbee9207675cbde460c99682015758111b8f9aad7193832619fb1782"
+        );
+    }
+
+    #[test]
+    fn it_can_search_with_path() {
+        let user_data = vec![(1, 1111), (2, 2222), (3, 3333), (4, 4444), (5, 5555)];
+        let tag_leaf = "ProofOfReserve_Leaf";
+        let tag_branch = "ProofOfReserve_Branch";
+
+        let tree = MerkleTree::build(tag_leaf, tag_branch, &user_data);
+        let user_id = "3";
+        let (node, path) = tree
+            .search_with_path(|user_data| user_data.user_id == user_id.parse::<u32>().unwrap())
+            .unwrap();
+
+        assert_eq!(
+            path.to_vec(),
+            vec![
+                (
+                    "857f9bdfbbee9207675cbde460c99682015758111b8f9aad7193832619fb1782".to_string(),
+                    0u8
+                ),
+                (
+                    "09e1f208d3b96f4d5948225f3a1ea83fbc0017a80d1fcd2603ca537e958fcc57".to_string(),
+                    1u8
+                ),
+                (
+                    "76437464d68b779571e1d94270df86792faad0bdcfe2c0868459d4c9bd0ff5da".to_string(),
+                    0u8
+                )
+            ]
+        );
+    }
 }

@@ -1,6 +1,6 @@
-use rocket::State;
-use rocket::serde::{Serialize, json::Json};
 use merkle_root_lib;
+use rocket::serde::{json::Json, Serialize};
+use rocket::State;
 
 #[macro_use]
 extern crate rocket;
@@ -19,7 +19,10 @@ struct MerkleProof {
 
 #[get("/proof/<user_id>")]
 fn proof_by_user_id(state: &State<AppState>, user_id: &str) -> Json<MerkleProof> {
-    let (node, path) = state.tree.search_with_path(|user_data| user_data.user_id == user_id.parse::<u32>().unwrap()).unwrap();
+    let (node, path) = state
+        .tree
+        .search_with_path(|user_data| user_data.user_id == user_id.parse::<u32>().unwrap())
+        .unwrap();
     Json(MerkleProof {
         user_balance: node.user_data.as_ref().unwrap().user_balance,
         proof: path.to_vec(),
