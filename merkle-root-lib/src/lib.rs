@@ -19,8 +19,8 @@ impl UserData {
 #[derive(Clone)]
 pub struct MerkleNode {
     hash: Vec<u8>,
-    left: Option<Box<MerkleNode>>,
-    right: Option<Box<MerkleNode>>,
+    left: Option<usize>,
+    right: Option<usize>,
     pub user_data: Option<UserData>,
 }
 
@@ -33,16 +33,25 @@ impl MerkleNode {
             user_data,
         }
     }
+}
 
-    fn new_branch(left: MerkleNode, right: MerkleNode, tag: &str) -> Self {
-        let combined = vec![left.hash.clone(), right.hash.clone()].concat();
+impl MerkleTree {
+    fn new_branch(&mut self, left: usize, right: usize, tag: &str) -> usize {
+        let combined = vec![
+            self.nodes[left].hash.clone(),
+            self.nodes[right].hash.clone(),
+        ]
+        .concat();
         let hash = tagged_hash(tag, &combined);
-        MerkleNode {
+        let new_node = MerkleNode {
             hash,
-            left: Some(Box::new(left)),
-            right: Some(Box::new(right)),
+            left: Some(left),
+            right: Some(right),
             user_data: None,
-        }
+        };
+        let ret = self.nodes.len();
+        self.nodes.push(new_node);
+        ret
     }
 }
 
@@ -106,16 +115,20 @@ impl TraversePath {
 }
 
 pub struct MerkleTree {
-    root: Option<Box<MerkleNode>>,
+    root: Option<usize>,
+    nodes: Vec<MerkleNode>,
 }
 
 impl MerkleTree {
     pub fn build(tag_leaf: &str, tag_branch: &str, user_data: &[(u32, u32)]) -> Self {
         if user_data.is_empty() {
-            return MerkleTree { root: None };
+            return MerkleTree {
+                root: None,
+                nodes: vec![],
+            };
         }
 
-        let mut nodes: Vec<MerkleNode> = user_data
+        let nodes = user_data
             .iter()
             .map(|&(user_id, user_balance)| {
                 let user_data = UserData::new(user_id, user_balance);
@@ -127,31 +140,27 @@ impl MerkleTree {
             })
             .collect();
 
-        while nodes.len() > 1 {
-            let mut next_level = Vec::new();
+        let mut tree = Self { root: None, nodes };
 
-            for i in (0..nodes.len()).step_by(2) {
-                let left = nodes[i].clone();
-                let right = if i + 1 < nodes.len() {
-                    nodes[i + 1].clone()
-                } else {
-                    nodes[i].clone()
-                };
+        let mut start = 0;
 
-                let branch = MerkleNode::new_branch(left, right, tag_branch);
-                next_level.push(branch);
+        while tree.nodes.len() - start > 1 {
+            let next_start = tree.nodes.len();
+            for i in (start..tree.nodes.len()).step_by(2) {
+                let left = i;
+                let right = (i + 1).min(next_start - 1);
+
+                tree.new_branch(left, right, tag_branch);
             }
-
-            nodes = next_level;
+            start = next_start;
         }
 
-        MerkleTree {
-            root: Some(Box::new(nodes[0].clone())),
-        }
+        tree.root = Some(tree.nodes.len() - 1);
+        tree
     }
 
     pub fn root(&self) -> Option<String> {
-        self.root.as_ref().map(|node| hex::encode(&node.hash))
+        self.root.map(|node| hex::encode(&self.nodes[node].hash))
     }
 
     fn print(&self) {
@@ -161,13 +170,13 @@ impl MerkleTree {
 
             while let Some((node, level, position)) = stack.pop() {
                 let indent = "  ".repeat(level);
-                println!("{}{}: {}", indent, position, node);
+                println!("{}{}: {}", indent, position, self.nodes[*node]);
 
-                if let Some(right) = &node.right {
+                if let Some(right) = &self.nodes[*node].right {
                     stack.push((right, level + 1, "Right"));
                 }
 
-                if let Some(left) = &node.left {
+                if let Some(left) = &self.nodes[*node].left {
                     stack.push((left, level + 1, "Left"));
                 }
             }
@@ -182,13 +191,14 @@ impl MerkleTree {
     {
         if let Some(root) = &self.root {
             let mut path = TraversePath::new();
-            Self::search_node_with_path(root, &predicate, &mut path)
+            self.search_node_with_path(&self.nodes[*root], &predicate, &mut path)
         } else {
             None
         }
     }
 
     fn search_node_with_path<'a, F>(
+        &'a self,
         node: &'a MerkleNode,
         predicate: &F,
         path: &mut TraversePath,
@@ -210,7 +220,7 @@ impl MerkleTree {
 
         if let Some(left) = &node.left {
             path.add_step(hex::encode(&node.hash), NodeDirection::Left); // 0 for left
-            if let Some(result) = Self::search_node_with_path(left, predicate, path) {
+            if let Some(result) = self.search_node_with_path(&self.nodes[*left], predicate, path) {
                 return Some(result);
             }
             path.hashes.pop();
@@ -219,7 +229,7 @@ impl MerkleTree {
 
         if let Some(right) = &node.right {
             path.add_step(hex::encode(&node.hash), NodeDirection::Right); // 1 for right
-            if let Some(result) = Self::search_node_with_path(right, predicate, path) {
+            if let Some(result) = self.search_node_with_path(&self.nodes[*right], predicate, path) {
                 return Some(result);
             }
             path.hashes.pop();
@@ -271,6 +281,7 @@ mod tests {
         let tag_branch = "ProofOfReserve_Branch";
 
         let tree = MerkleTree::build(tag_leaf, tag_branch, &user_data);
+        tree.print();
 
         assert_eq!(
             tree.root().unwrap(),
