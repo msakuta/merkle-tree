@@ -1,6 +1,9 @@
 use sha2::{Digest, Sha256};
 use std::fmt;
 
+type Hash = sha2::digest::Output<Sha256>;
+const SHA256_LEN: usize = std::mem::size_of::<Hash>();
+
 #[derive(Clone, Debug)]
 pub struct UserData {
     pub user_id: u32,
@@ -18,14 +21,14 @@ impl UserData {
 
 #[derive(Clone)]
 pub struct MerkleNode {
-    hash: Vec<u8>,
+    hash: Hash,
     left: Option<usize>,
     right: Option<usize>,
     pub user_data: Option<UserData>,
 }
 
 impl MerkleNode {
-    fn new_leaf(hash: Vec<u8>, user_data: Option<UserData>) -> Self {
+    fn new_leaf(hash: Hash, user_data: Option<UserData>) -> Self {
         MerkleNode {
             hash,
             left: None,
@@ -37,11 +40,9 @@ impl MerkleNode {
 
 impl MerkleTree {
     fn new_branch(&mut self, left: usize, right: usize, tag: &str) -> usize {
-        let combined = vec![
-            self.nodes[left].hash.clone(),
-            self.nodes[right].hash.clone(),
-        ]
-        .concat();
+        let mut combined = [0u8; SHA256_LEN * 2];
+        combined[..SHA256_LEN].copy_from_slice(&self.nodes[left].hash);
+        combined[SHA256_LEN..].copy_from_slice(&self.nodes[right].hash);
         let hash = tagged_hash(tag, &combined);
         let new_node = MerkleNode {
             hash,
@@ -240,12 +241,12 @@ impl MerkleTree {
     }
 }
 
-fn tagged_hash(tag: &str, input: &[u8]) -> Vec<u8> {
+fn tagged_hash(tag: &str, input: &[u8]) -> Hash {
     let mut hasher = Sha256::new();
     hasher.update(tag.as_bytes());
     hasher.update(tag.as_bytes());
     hasher.update(input);
-    hasher.finalize().to_vec()
+    hasher.finalize()
 }
 
 #[cfg(test)]
@@ -281,7 +282,6 @@ mod tests {
         let tag_branch = "ProofOfReserve_Branch";
 
         let tree = MerkleTree::build(tag_leaf, tag_branch, &user_data);
-        tree.print();
 
         assert_eq!(
             tree.root().unwrap(),
